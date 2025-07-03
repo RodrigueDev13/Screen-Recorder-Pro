@@ -10,11 +10,13 @@ const RecordPage: React.FC = () => {
   const [isVideoEnabled, setIsVideoEnabled] = useState(false);
   const [permissionStatus, setPermissionStatus] = useState<'unknown' | 'granted' | 'denied'>('unknown');
   const [isInitializing, setIsInitializing] = useState(false);
+  const [error, setError] = useState<string | null>(null);
   
   const mediaRecorderRef = useRef<MediaRecorder | null>(null);
   const streamRef = useRef<MediaStream | null>(null);
   const intervalRef = useRef<NodeJS.Timeout | null>(null);
   const videoRef = useRef<HTMLVideoElement | null>(null);
+  const isCleaningUpRef = useRef(false);
 
   useEffect(() => {
     return () => {
@@ -22,48 +24,97 @@ const RecordPage: React.FC = () => {
     };
   }, []);
 
-  const cleanupResources = () => {
-    if (streamRef.current) {
-      streamRef.current.getTracks().forEach(track => {
-        track.stop();
-      });
-      streamRef.current = null;
+  const cleanupResources = async () => {
+    if (isCleaningUpRef.current) return;
+    isCleaningUpRef.current = true;
+
+    try {
+      // Stop MediaRecorder first
+      if (mediaRecorderRef.current && mediaRecorderRef.current.state !== 'inactive') {
+        try {
+          mediaRecorderRef.current.stop();
+        } catch (error) {
+          console.log('MediaRecorder already stopped:', error);
+        }
+      }
+      mediaRecorderRef.current = null;
+
+      // Stop all tracks
+      if (streamRef.current) {
+        streamRef.current.getTracks().forEach(track => {
+          if (track.readyState === 'live') {
+            track.stop();
+          }
+        });
+        streamRef.current = null;
+      }
+
+      // Clear interval
+      if (intervalRef.current) {
+        clearInterval(intervalRef.current);
+        intervalRef.current = null;
+      }
+
+      // Clear video
+      if (videoRef.current) {
+        videoRef.current.srcObject = null;
+        videoRef.current.pause();
+      }
+
+      setIsVideoEnabled(false);
+      setError(null);
+
+      // Small delay to ensure cleanup is complete
+      await new Promise(resolve => setTimeout(resolve, 100));
+    } finally {
+      isCleaningUpRef.current = false;
     }
-    if (intervalRef.current) {
-      clearInterval(intervalRef.current);
-      intervalRef.current = null;
-    }
-    if (videoRef.current) {
-      videoRef.current.srcObject = null;
-    }
-    setIsVideoEnabled(false);
   };
 
-  const checkPermissions = async () => {
+  const checkDeviceAvailability = async () => {
     try {
-      const audioPermission = await navigator.permissions.query({ name: 'microphone' as PermissionName });
-      if (recordingMode === 'video') {
-        const videoPermission = await navigator.permissions.query({ name: 'camera' as PermissionName });
-        return audioPermission.state === 'granted' && videoPermission.state === 'granted';
+      const devices = await navigator.mediaDevices.enumerateDevices();
+      const hasAudio = devices.some(device => device.kind === 'audioinput');
+      const hasVideo = devices.some(device => device.kind === 'videoinput');
+      
+      if (!hasAudio) {
+        throw new Error('Aucun microphone détecté sur votre système');
       }
-      return audioPermission.state === 'granted';
+      
+      if (recordingMode === 'video' && !hasVideo) {
+        throw new Error('Aucune caméra détectée sur votre système');
+      }
+      
+      return true;
     } catch (error) {
-      console.log('Permission API not supported, will request directly');
-      return false;
+      console.error('Device check failed:', error);
+      throw error;
     }
   };
 
   const requestMediaAccess = async () => {
     setIsInitializing(true);
+    setError(null);
     
     try {
+      // Check device availability first
+      await checkDeviceAvailability();
+
+      // Clean up any existing resources
+      await cleanupResources();
+
+      // Wait a bit after cleanup to ensure resources are released
+      await new Promise(resolve => setTimeout(resolve, 200));
+
       // Configuration des contraintes média selon le mode
       const constraints = recordingMode === 'video' 
         ? { 
             audio: {
               echoCancellation: true,
               noiseSuppression: true,
-              autoGainControl: true
+              autoGainControl: true,
+              sampleRate: 44100,
+              channelCount: 2
             }, 
             video: { 
               width: { ideal: 1280, max: 1920 },
@@ -76,22 +127,34 @@ const RecordPage: React.FC = () => {
             audio: {
               echoCancellation: true,
               noiseSuppression: true,
-              autoGainControl: true
+              autoGainControl: true,
+              sampleRate: 44100,
+              channelCount: 2
             }, 
             video: false 
           };
 
       console.log('Requesting media access with constraints:', constraints);
       
-      // Nettoyer les ressources existantes avant de demander de nouvelles permissions
-      cleanupResources();
-      
       const stream = await navigator.mediaDevices.getUserMedia(constraints);
       
-      console.log('Media access granted, stream tracks:', stream.getTracks().map(track => ({
+      // Verify stream is valid
+      if (!stream || stream.getTracks().length === 0) {
+        throw new Error('Flux média invalide reçu');
+      }
+
+      // Check if tracks are active
+      const activeTracks = stream.getTracks().filter(track => track.readyState === 'live');
+      if (activeTracks.length === 0) {
+        stream.getTracks().forEach(track => track.stop());
+        throw new Error('Aucune piste média active obtenue');
+      }
+      
+      console.log('Media access granted, stream tracks:', activeTracks.map(track => ({
         kind: track.kind,
         enabled: track.enabled,
-        readyState: track.readyState
+        readyState: track.readyState,
+        label: track.label
       })));
       
       streamRef.current = stream;
@@ -105,6 +168,7 @@ const RecordPage: React.FC = () => {
           setIsVideoEnabled(true);
         } catch (playError) {
           console.error('Error playing video:', playError);
+          // Don't throw here, video preview is not critical
         }
       }
       
@@ -114,8 +178,8 @@ const RecordPage: React.FC = () => {
       console.error('Erreur lors de l\'accès aux médias:', error);
       setPermissionStatus('denied');
       
-      // Clean up resources after error to prevent conflicts
-      cleanupResources();
+      // Clean up resources after error
+      await cleanupResources();
       
       let errorMessage = 'Impossible d\'accéder aux médias.';
       if (error instanceof Error) {
@@ -130,7 +194,7 @@ const RecordPage: React.FC = () => {
             break;
           case 'NotReadableError':
             errorMessage = 'Dispositif déjà utilisé par une autre application. Veuillez fermer les autres applications utilisant le microphone' +
-              (recordingMode === 'video' ? ' ou la caméra' : '') + '.';
+              (recordingMode === 'video' ? ' ou la caméra' : '') + ' et réessayer.';
             break;
           case 'OverconstrainedError':
             errorMessage = 'Les paramètres demandés ne sont pas supportés par votre dispositif.';
@@ -138,13 +202,16 @@ const RecordPage: React.FC = () => {
           case 'SecurityError':
             errorMessage = 'Accès sécurisé requis. Assurez-vous d\'utiliser HTTPS.';
             break;
+          case 'AbortError':
+            errorMessage = 'Demande d\'accès annulée. Veuillez réessayer.';
+            break;
           default:
-            errorMessage = `Erreur: ${error.message}`;
+            errorMessage = error.message || 'Erreur inconnue lors de l\'accès aux médias';
         }
       }
       
-      alert(errorMessage);
-      throw error;
+      setError(errorMessage);
+      throw new Error(errorMessage);
     } finally {
       setIsInitializing(false);
     }
@@ -153,10 +220,20 @@ const RecordPage: React.FC = () => {
   const startRecording = async () => {
     try {
       setIsInitializing(true);
+      setError(null);
       
       // Obtenir l'accès aux médias
       let stream = streamRef.current;
-      if (!stream || stream.getTracks().some(track => track.readyState === 'ended')) {
+      
+      // Check if existing stream is still valid
+      if (stream) {
+        const activeTracks = stream.getTracks().filter(track => track.readyState === 'live');
+        if (activeTracks.length === 0) {
+          stream = null;
+        }
+      }
+      
+      if (!stream) {
         stream = await requestMediaAccess();
       }
       
@@ -173,7 +250,8 @@ const RecordPage: React.FC = () => {
       console.log('Starting recording with active tracks:', activeTracks.map(track => ({
         kind: track.kind,
         enabled: track.enabled,
-        readyState: track.readyState
+        readyState: track.readyState,
+        label: track.label
       })));
 
       // Déterminer le type MIME supporté
@@ -189,14 +267,19 @@ const RecordPage: React.FC = () => {
         }
       }
       
+      if (!mimeType) {
+        throw new Error('Aucun format d\'enregistrement supporté par votre navigateur');
+      }
+      
       console.log('Using MIME type:', mimeType);
       
-      // Créer le MediaRecorder
-      const mediaRecorder = new MediaRecorder(stream, {
-        mimeType: mimeType || undefined,
-        bitsPerSecond: recordingMode === 'video' ? 2500000 : 128000 // 2.5Mbps pour vidéo, 128kbps pour audio
-      });
-      
+      // Créer le MediaRecorder avec des options optimisées
+      const options: MediaRecorderOptions = {
+        mimeType: mimeType,
+        bitsPerSecond: recordingMode === 'video' ? 2500000 : 128000
+      };
+
+      const mediaRecorder = new MediaRecorder(stream, options);
       mediaRecorderRef.current = mediaRecorder;
 
       const chunks: BlobPart[] = [];
@@ -210,11 +293,15 @@ const RecordPage: React.FC = () => {
 
       mediaRecorder.onstop = () => {
         console.log('Recording stopped, creating blob from', chunks.length, 'chunks');
-        const blob = new Blob(chunks, { 
-          type: recordingMode === 'video' ? 'video/webm' : 'audio/webm' 
-        });
-        console.log('Created blob:', blob.size, 'bytes');
-        setRecordedBlob(blob);
+        if (chunks.length > 0) {
+          const blob = new Blob(chunks, { 
+            type: recordingMode === 'video' ? 'video/webm' : 'audio/webm' 
+          });
+          console.log('Created blob:', blob.size, 'bytes');
+          setRecordedBlob(blob);
+        } else {
+          setError('Aucune donnée enregistrée');
+        }
         
         // Arrêter l'affichage vidéo
         if (videoRef.current) {
@@ -225,11 +312,14 @@ const RecordPage: React.FC = () => {
 
       mediaRecorder.onerror = (event) => {
         console.error('MediaRecorder error:', event);
-        alert('Erreur lors de l\'enregistrement: ' + (event as any).error?.message || 'Erreur inconnue');
+        const errorMsg = 'Erreur lors de l\'enregistrement: ' + ((event as any).error?.message || 'Erreur inconnue');
+        setError(errorMsg);
+        setIsRecording(false);
       };
 
       mediaRecorder.onstart = () => {
         console.log('Recording started successfully');
+        setError(null);
       };
 
       // Démarrer l'enregistrement
@@ -248,17 +338,18 @@ const RecordPage: React.FC = () => {
       
       let errorMessage = 'Impossible de démarrer l\'enregistrement.';
       if (error instanceof Error) {
-        errorMessage += ' ' + error.message;
+        errorMessage = error.message;
       }
       
-      alert(errorMessage);
+      setError(errorMessage);
       setIsRecording(false);
+      await cleanupResources();
     } finally {
       setIsInitializing(false);
     }
   };
 
-  const stopRecording = () => {
+  const stopRecording = async () => {
     console.log('Stopping recording...');
     
     if (mediaRecorderRef.current && isRecording) {
@@ -294,10 +385,11 @@ const RecordPage: React.FC = () => {
     }
   };
 
-  const resetRecording = () => {
+  const resetRecording = async () => {
     setRecordedBlob(null);
     setRecordingTime(0);
-    cleanupResources();
+    setError(null);
+    await cleanupResources();
     setPermissionStatus('unknown');
   };
 
@@ -401,8 +493,23 @@ const RecordPage: React.FC = () => {
               </span>
             </div>
 
+            {/* Error display */}
+            {error && (
+              <div className="bg-red-50 border border-red-200 rounded-lg p-4 max-w-2xl w-full">
+                <div className="flex">
+                  <svg className="w-5 h-5 text-red-400 mr-2 mt-0.5 flex-shrink-0" fill="currentColor" viewBox="0 0 20 20">
+                    <path fillRule="evenodd" d="M10 18a8 8 0 100-16 8 8 0 000 16zM8.707 7.293a1 1 0 00-1.414 1.414L8.586 10l-1.293 1.293a1 1 0 101.414 1.414L10 11.414l1.293 1.293a1 1 0 001.414-1.414L11.414 10l1.293-1.293a1 1 0 00-1.414-1.414L10 8.586 8.707 7.293z" clipRule="evenodd" />
+                  </svg>
+                  <div>
+                    <h3 className="text-sm font-medium text-red-800">Erreur</h3>
+                    <p className="text-sm text-red-700 mt-1">{error}</p>
+                  </div>
+                </div>
+              </div>
+            )}
+
             {/* Permission status */}
-            {permissionStatus === 'denied' && (
+            {permissionStatus === 'denied' && !error && (
               <div className="bg-red-50 border border-red-200 rounded-lg p-4 max-w-md">
                 <div className="flex">
                   <svg className="w-5 h-5 text-red-400 mr-2 mt-0.5" fill="currentColor" viewBox="0 0 20 20">

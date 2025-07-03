@@ -10,40 +10,73 @@ interface AuthProviderProps {
 export const AuthProvider: React.FC<AuthProviderProps> = ({ children }) => {
   const [user, setUser] = useState<GoogleUser | null>(null);
   const [isLoading, setIsLoading] = useState(true);
+  const [isGoogleLoaded, setIsGoogleLoaded] = useState(false);
 
   useEffect(() => {
-    // Charger le script Google Sign-In
-    const script = document.createElement('script');
-    script.src = 'https://accounts.google.com/gsi/client';
-    script.async = true;
-    script.defer = true;
-    
-    script.onload = () => {
-      initializeGoogleSignIn();
-    };
-    
-    document.head.appendChild(script);
-
     // Vérifier si l'utilisateur est déjà connecté
     const savedUser = localStorage.getItem('googleUser');
     if (savedUser) {
       setUser(JSON.parse(savedUser));
     }
-    setIsLoading(false);
+
+    // Charger le script Google Sign-In seulement si pas déjà chargé
+    if (!window.google && !document.querySelector('script[src*="accounts.google.com"]')) {
+      const script = document.createElement('script');
+      script.src = 'https://accounts.google.com/gsi/client';
+      script.async = true;
+      script.defer = true;
+      
+      script.onload = () => {
+        setIsGoogleLoaded(true);
+        initializeGoogleSignIn();
+      };
+      
+      script.onerror = () => {
+        console.error('Failed to load Google Sign-In script');
+        setIsLoading(false);
+      };
+      
+      document.head.appendChild(script);
+    } else if (window.google) {
+      setIsGoogleLoaded(true);
+      initializeGoogleSignIn();
+    } else {
+      setIsLoading(false);
+    }
 
     return () => {
-      document.head.removeChild(script);
+      // Cleanup: disable auto-select when component unmounts
+      if (window.google?.accounts?.id) {
+        try {
+          window.google.accounts.id.disableAutoSelect();
+        } catch (error) {
+          console.log('Error disabling auto-select:', error);
+        }
+      }
     };
   }, []);
 
   const initializeGoogleSignIn = () => {
-    if (window.google) {
+    if (!window.google?.accounts?.id) {
+      setIsLoading(false);
+      return;
+    }
+
+    try {
+      // Cancel any existing prompts before initializing
+      window.google.accounts.id.cancel();
+      
       window.google.accounts.id.initialize({
         client_id: import.meta.env.VITE_GOOGLE_CLIENT_ID,
         callback: handleCredentialResponse,
         auto_select: false,
         cancel_on_tap_outside: true,
+        use_fedcm_for_prompt: false, // Disable FedCM to avoid conflicts
       });
+    } catch (error) {
+      console.error('Error initializing Google Sign-In:', error);
+    } finally {
+      setIsLoading(false);
     }
   };
 
@@ -67,16 +100,33 @@ export const AuthProvider: React.FC<AuthProviderProps> = ({ children }) => {
   };
 
   const signIn = () => {
-    if (window.google) {
-      window.google.accounts.id.prompt();
+    if (!window.google?.accounts?.id) {
+      console.error('Google Sign-In not loaded');
+      return;
+    }
+
+    try {
+      // Cancel any existing prompts before starting new one
+      window.google.accounts.id.cancel();
+      
+      // Small delay to ensure cancellation is processed
+      setTimeout(() => {
+        window.google.accounts.id.prompt();
+      }, 100);
+    } catch (error) {
+      console.error('Error during sign in:', error);
     }
   };
 
   const signOut = () => {
     setUser(null);
     localStorage.removeItem('googleUser');
-    if (window.google) {
-      window.google.accounts.id.disableAutoSelect();
+    if (window.google?.accounts?.id) {
+      try {
+        window.google.accounts.id.disableAutoSelect();
+      } catch (error) {
+        console.log('Error during sign out:', error);
+      }
     }
   };
 
