@@ -147,8 +147,6 @@ const RecordPage: React.FC = () => {
 
       setIsVideoEnabled(false);
       setError(null);
-
-      await new Promise(resolve => setTimeout(resolve, 100));
     } finally {
       isCleaningUpRef.current = false;
     }
@@ -210,7 +208,6 @@ const RecordPage: React.FC = () => {
     
     try {
       await cleanupResources();
-      await new Promise(resolve => setTimeout(resolve, 200));
 
       let finalStream: MediaStream;
 
