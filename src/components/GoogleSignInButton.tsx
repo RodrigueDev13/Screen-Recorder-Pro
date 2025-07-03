@@ -28,10 +28,7 @@ const GoogleSignInButton: React.FC<GoogleSignInButtonProps> = ({ isLoading }) =>
           buttonRef.current.innerHTML = '';
         }
 
-        // Cancel any existing prompts before rendering button
-        window.google.accounts.id.cancel();
-
-        // Small delay to ensure cancellation is processed
+        // Small delay to ensure any previous operations are complete
         setTimeout(() => {
           if (buttonRef.current && window.google?.accounts?.id) {
             window.google.accounts.id.renderButton(buttonRef.current, {

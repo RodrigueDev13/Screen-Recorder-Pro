@@ -55,10 +55,11 @@ const RecordPage: React.FC = () => {
         intervalRef.current = null;
       }
 
-      // Clear video
+      // Clear video and explicitly reload to release media resources
       if (videoRef.current) {
         videoRef.current.srcObject = null;
         videoRef.current.pause();
+        videoRef.current.load();
       }
 
       setIsVideoEnabled(false);
