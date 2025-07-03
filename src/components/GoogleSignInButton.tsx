@@ -1,12 +1,16 @@
 import React, { useEffect, useRef, useState } from 'react';
 
-const GoogleSignInButton: React.FC = () => {
+interface GoogleSignInButtonProps {
+  isLoading: boolean;
+}
+
+const GoogleSignInButton: React.FC<GoogleSignInButtonProps> = ({ isLoading }) => {
   const buttonRef = useRef<HTMLDivElement>(null);
   const [isInitialized, setIsInitialized] = useState(false);
 
   useEffect(() => {
-    // Prevent multiple initializations
-    if (isInitialized || !window.google || !buttonRef.current) {
+    // Prevent multiple initializations and wait for auth context to finish loading
+    if (isInitialized || isLoading || !window.google || !buttonRef.current) {
       return;
     }
 
@@ -38,7 +42,7 @@ const GoogleSignInButton: React.FC = () => {
       }
       setIsInitialized(false);
     };
-  }, [isInitialized]);
+  }, [isInitialized, isLoading]);
 
   return (
     <div className="flex flex-col items-center">

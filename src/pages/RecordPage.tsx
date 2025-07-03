@@ -114,6 +114,9 @@ const RecordPage: React.FC = () => {
       console.error('Erreur lors de l\'accès aux médias:', error);
       setPermissionStatus('denied');
       
+      // Clean up resources after error to prevent conflicts
+      cleanupResources();
+      
       let errorMessage = 'Impossible d\'accéder aux médias.';
       if (error instanceof Error) {
         switch (error.name) {

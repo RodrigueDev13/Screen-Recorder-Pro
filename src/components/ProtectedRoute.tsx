@@ -28,7 +28,7 @@ const ProtectedRoute: React.FC<ProtectedRouteProps> = ({ children }) => {
             <p className="text-gray-600 mb-8">
               Veuillez vous connecter avec votre compte Google pour accéder à l'application.
             </p>
-            <GoogleSignInButton />
+            <GoogleSignInButton isLoading={isLoading} />
           </div>
         </div>
       </div>
